@@ -156,6 +156,10 @@ flags.DEFINE_float(
     "https://www.tensorflow.org/guide/saved_model#details_of_the_savedmodel_command_line_interface"
     ") to view the output signature of the threshold.")
 
+flags.DEFINE_string(
+    "device", "cuda",
+    "which device to use, cuda/xpu")
+
 
 def _serving_input_receiver_fn():
   """Creates an input function for serving."""
@@ -212,6 +216,9 @@ def main(_):
       "qnli": classifier_utils.QnliProcessor,
       "wnli": classifier_utils.WnliProcessor,
   }
+
+  if FLAGS.device == "cuda":
+      tf.config.experimental.enable_tensor_float_32_execution(False)
 
   if not (FLAGS.do_train or FLAGS.do_eval or FLAGS.do_predict or
           FLAGS.export_dir):
