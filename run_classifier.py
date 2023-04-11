@@ -21,15 +21,16 @@ from __future__ import print_function
 import math
 import os
 import time
-from albert import classifier_utils
-from albert import fine_tuning_utils
-from albert import modeling
-import tensorflow.compat.v1 as tf
+import classifier_utils
+import fine_tuning_utils
+import modeling
+import tensorflow as tf
 from tensorflow.compat.v1 import estimator as tf_estimator
-from tensorflow.contrib import cluster_resolver as contrib_cluster_resolver
-from tensorflow.contrib import tpu as contrib_tpu
+import train_hooks
+# from tensorflow.contrib import cluster_resolver as contrib_cluster_resolver
+# from tensorflow.contrib import tpu as contrib_tpu
 
-flags = tf.flags
+flags = tf.compat.v1.flags
 
 FLAGS = flags.FLAGS
 
@@ -118,25 +119,25 @@ flags.DEFINE_bool("use_tpu", False, "Whether to use TPU or GPU/CPU.")
 
 flags.DEFINE_string("optimizer", "adamw", "Optimizer to use")
 
-tf.flags.DEFINE_string(
+tf.compat.v1.flags.DEFINE_string(
     "tpu_name", None,
     "The Cloud TPU to use for training. This should be either the name "
     "used when creating the Cloud TPU, or a grpc://ip.address.of.tpu:8470 "
     "url.")
 
-tf.flags.DEFINE_string(
+tf.compat.v1.flags.DEFINE_string(
     "tpu_zone", None,
     "[Optional] GCE zone where the Cloud TPU is located in. If not "
     "specified, we will attempt to automatically detect the GCE project from "
     "metadata.")
 
-tf.flags.DEFINE_string(
+tf.compat.v1.flags.DEFINE_string(
     "gcp_project", None,
     "[Optional] Project name for the Cloud TPU-enabled project. If not "
     "specified, we will attempt to automatically detect the GCE project from "
     "metadata.")
 
-tf.flags.DEFINE_string("master", None, "[Optional] TensorFlow master URL.")
+tf.compat.v1.flags.DEFINE_string("master", None, "[Optional] TensorFlow master URL.")
 
 flags.DEFINE_integer(
     "num_tpu_cores", 8,
@@ -159,14 +160,14 @@ flags.DEFINE_float(
 def _serving_input_receiver_fn():
   """Creates an input function for serving."""
   seq_len = FLAGS.max_seq_length
-  serialized_example = tf.placeholder(
+  serialized_example = tf.compat.v1.placeholder(
       dtype=tf.string, shape=[None], name="serialized_example")
   features = {
-      "input_ids": tf.FixedLenFeature([seq_len], dtype=tf.int64),
-      "input_mask": tf.FixedLenFeature([seq_len], dtype=tf.int64),
-      "segment_ids": tf.FixedLenFeature([seq_len], dtype=tf.int64),
+      "input_ids": tf.io.FixedLenFeature([seq_len], dtype=tf.int64),
+      "input_mask": tf.io.FixedLenFeature([seq_len], dtype=tf.int64),
+      "segment_ids": tf.io.FixedLenFeature([seq_len], dtype=tf.int64),
   }
-  feature_map = tf.parse_example(serialized_example, features=features)
+  feature_map = tf.io.parse_example(serialized=serialized_example, features=features)
   feature_map["is_real_example"] = tf.constant(1, dtype=tf.int32)
   feature_map["label_ids"] = tf.constant(0, dtype=tf.int32)
 
@@ -175,7 +176,7 @@ def _serving_input_receiver_fn():
   for name in feature_map.keys():
     t = feature_map[name]
     if t.dtype == tf.int64:
-      t = tf.to_int32(t)
+      t = tf.cast(t, dtype=tf.int32)
     feature_map[name] = t
 
   return tf_estimator.export.ServingInputReceiver(
@@ -189,7 +190,7 @@ def _add_threshold_to_model_fn(model_fn, threshold):
     spec = model_fn(features, labels, mode, params)
     threshold_tensor = tf.constant(threshold, dtype=tf.float32)
     default_serving_export = spec.export_outputs[
-        tf.saved_model.signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY]
+        tf.saved_model.DEFAULT_SERVING_SIGNATURE_DEF_KEY]
     default_serving_export.outputs["threshold"] = threshold_tensor
     return spec
 
@@ -197,7 +198,7 @@ def _add_threshold_to_model_fn(model_fn, threshold):
 
 
 def main(_):
-  tf.logging.set_verbosity(tf.logging.INFO)
+  tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
 
   processors = {
       "cola": classifier_utils.ColaProcessor,
@@ -233,7 +234,7 @@ def main(_):
   else:
     albert_config = None  # Get the config from TF-Hub.
 
-  tf.gfile.MakeDirs(FLAGS.output_dir)
+  tf.io.gfile.makedirs(FLAGS.output_dir)
 
   task_name = FLAGS.task_name.lower()
 
@@ -254,22 +255,22 @@ def main(_):
 
   tpu_cluster_resolver = None
   if FLAGS.use_tpu and FLAGS.tpu_name:
-    tpu_cluster_resolver = contrib_cluster_resolver.TPUClusterResolver(
+    tpu_cluster_resolver = tf.distribute.cluster_resolver.TPUClusterResolver(
         FLAGS.tpu_name, zone=FLAGS.tpu_zone, project=FLAGS.gcp_project)
 
-  is_per_host = contrib_tpu.InputPipelineConfig.PER_HOST_V2
+  is_per_host = tf.compat.v1.estimator.tpu.InputPipelineConfig.PER_HOST_V2
   if FLAGS.do_train:
     iterations_per_loop = int(min(FLAGS.iterations_per_loop,
                                   FLAGS.save_checkpoints_steps))
   else:
     iterations_per_loop = FLAGS.iterations_per_loop
-  run_config = contrib_tpu.RunConfig(
+  run_config = tf.compat.v1.estimator.tpu.RunConfig(
       cluster=tpu_cluster_resolver,
       master=FLAGS.master,
       model_dir=FLAGS.output_dir,
       save_checkpoints_steps=int(FLAGS.save_checkpoints_steps),
       keep_checkpoint_max=0,
-      tpu_config=contrib_tpu.TPUConfig(
+      tpu_config=tf.compat.v1.estimator.tpu.TPUConfig(
           iterations_per_loop=iterations_per_loop,
           num_shards=FLAGS.num_tpu_cores,
           per_host_input_for_training=is_per_host))
@@ -295,7 +296,7 @@ def main(_):
 
   # If TPU is not available, this will fall back to normal Estimator on CPU
   # or GPU.
-  estimator = contrib_tpu.TPUEstimator(
+  estimator = tf.compat.v1.estimator.tpu.TPUEstimator(
       use_tpu=FLAGS.use_tpu,
       model_fn=model_fn,
       config=run_config,
@@ -309,14 +310,14 @@ def main(_):
     if not cached_dir:
       cached_dir = FLAGS.output_dir
     train_file = os.path.join(cached_dir, task_name + "_train.tf_record")
-    if not tf.gfile.Exists(train_file):
+    if not tf.io.gfile.exists(train_file):
       classifier_utils.file_based_convert_examples_to_features(
           train_examples, label_list, FLAGS.max_seq_length, tokenizer,
           train_file, task_name)
-    tf.logging.info("***** Running training *****")
-    tf.logging.info("  Num examples = %d", len(train_examples))
-    tf.logging.info("  Batch size = %d", FLAGS.train_batch_size)
-    tf.logging.info("  Num steps = %d", FLAGS.train_step)
+    tf.compat.v1.logging.info("***** Running training *****")
+    tf.compat.v1.logging.info("  Num examples = %d", len(train_examples))
+    tf.compat.v1.logging.info("  Batch size = %d", FLAGS.train_batch_size)
+    tf.compat.v1.logging.info("  Num steps = %d", FLAGS.train_step)
     train_input_fn = classifier_utils.file_based_input_fn_builder(
         input_file=train_file,
         seq_length=FLAGS.max_seq_length,
@@ -325,7 +326,8 @@ def main(_):
         task_name=task_name,
         use_tpu=FLAGS.use_tpu,
         bsz=FLAGS.train_batch_size)
-    estimator.train(input_fn=train_input_fn, max_steps=FLAGS.train_step)
+    train_hook = train_hooks.ExamplesPerSecondHook(FLAGS.train_batch_size, every_n_steps=4, warm_steps=20)
+    estimator.train(input_fn=train_input_fn, max_steps=FLAGS.train_step, hooks=[train_hook])
 
   if FLAGS.do_eval:
     eval_examples = processor.get_dev_examples(FLAGS.data_dir)
@@ -343,16 +345,16 @@ def main(_):
     if not cached_dir:
       cached_dir = FLAGS.output_dir
     eval_file = os.path.join(cached_dir, task_name + "_eval.tf_record")
-    if not tf.gfile.Exists(eval_file):
+    if not tf.io.gfile.exists(eval_file):
       classifier_utils.file_based_convert_examples_to_features(
           eval_examples, label_list, FLAGS.max_seq_length, tokenizer,
           eval_file, task_name)
 
-    tf.logging.info("***** Running evaluation *****")
-    tf.logging.info("  Num examples = %d (%d actual, %d padding)",
+    tf.compat.v1.logging.info("***** Running evaluation *****")
+    tf.compat.v1.logging.info("  Num examples = %d (%d actual, %d padding)",
                     len(eval_examples), num_actual_eval_examples,
                     len(eval_examples) - num_actual_eval_examples)
-    tf.logging.info("  Batch size = %d", FLAGS.eval_batch_size)
+    tf.compat.v1.logging.info("  Batch size = %d", FLAGS.eval_batch_size)
 
     # This tells the estimator to run through the entire set.
     eval_steps = None
@@ -376,8 +378,8 @@ def main(_):
 
     def _best_trial_info():
       """Returns information about which checkpoints have been evaled so far."""
-      if tf.gfile.Exists(best_trial_info_file):
-        with tf.gfile.GFile(best_trial_info_file, "r") as best_info:
+      if tf.io.gfile.exists(best_trial_info_file):
+        with tf.io.gfile.GFile(best_trial_info_file, "r") as best_info:
           global_step, best_metric_global_step, metric_value = (
               best_info.read().split(":"))
           global_step = int(global_step)
@@ -387,7 +389,7 @@ def main(_):
         metric_value = -1
         best_metric_global_step = -1
         global_step = -1
-      tf.logging.info(
+      tf.compat.v1.logging.info(
           "Best trial info: Step: %s, Best Value Step: %s, "
           "Best Value: %s", global_step, best_metric_global_step, metric_value)
       return global_step, best_metric_global_step, metric_value
@@ -395,11 +397,11 @@ def main(_):
     def _remove_checkpoint(checkpoint_path):
       for ext in ["meta", "data-00000-of-00001", "index"]:
         src_ckpt = checkpoint_path + ".{}".format(ext)
-        tf.logging.info("removing {}".format(src_ckpt))
-        tf.gfile.Remove(src_ckpt)
+        tf.compat.v1.logging.info("removing {}".format(src_ckpt))
+        tf.io.gfile.remove(src_ckpt)
 
     def _find_valid_cands(curr_step):
-      filenames = tf.gfile.ListDirectory(FLAGS.output_dir)
+      filenames = tf.io.gfile.listdir(FLAGS.output_dir)
       candidates = []
       for filename in filenames:
         if filename.endswith(".index"):
@@ -419,10 +421,10 @@ def main(_):
       key_name = "eval_accuracy"
 
     global_step, best_perf_global_step, best_perf = _best_trial_info()
-    writer = tf.gfile.GFile(output_eval_file, "w")
+    writer = tf.io.gfile.GFile(output_eval_file, "w")
     while global_step < FLAGS.train_step:
       steps_and_files = {}
-      filenames = tf.gfile.ListDirectory(FLAGS.output_dir)
+      filenames = tf.io.gfile.listdir(FLAGS.output_dir)
       for filename in filenames:
         if filename.endswith(".index"):
           ckpt_name = filename[:-6]
@@ -431,11 +433,11 @@ def main(_):
             continue
           gstep = int(cur_filename.split("-")[-1])
           if gstep not in steps_and_files:
-            tf.logging.info("Add {} to eval list.".format(cur_filename))
+            tf.compat.v1.logging.info("Add {} to eval list.".format(cur_filename))
             steps_and_files[gstep] = cur_filename
-      tf.logging.info("found {} files.".format(len(steps_and_files)))
+      tf.compat.v1.logging.info("found {} files.".format(len(steps_and_files)))
       if not steps_and_files:
-        tf.logging.info("found 0 file, global step: {}. Sleeping."
+        tf.compat.v1.logging.info("found 0 file, global step: {}. Sleeping."
                         .format(global_step))
         time.sleep(60)
       else:
@@ -451,9 +453,9 @@ def main(_):
               steps=eval_steps,
               checkpoint_path=checkpoint_path)
           global_step = result["global_step"]
-          tf.logging.info("***** Eval results *****")
+          tf.compat.v1.logging.info("***** Eval results *****")
           for key in sorted(result.keys()):
-            tf.logging.info("  %s = %s", key, str(result[key]))
+            tf.compat.v1.logging.info("  %s = %s", key, str(result[key]))
             writer.write("%s = %s\n" % (key, str(result[key])))
           writer.write("best = {}\n".format(best_perf))
           if result[key_name] > best_perf:
@@ -463,7 +465,7 @@ def main(_):
             _remove_checkpoint(checkpoint_path)
           writer.write("=" * 50 + "\n")
           writer.flush()
-          with tf.gfile.GFile(best_trial_info_file, "w") as best_info:
+          with tf.io.gfile.GFile(best_trial_info_file, "w") as best_info:
             best_info.write("{}:{}:{}".format(
                 global_step, best_perf_global_step, best_perf))
     writer.close()
@@ -471,7 +473,7 @@ def main(_):
     for ext in ["meta", "data-00000-of-00001", "index"]:
       src_ckpt = "model.ckpt-{}.{}".format(best_perf_global_step, ext)
       tgt_ckpt = "model.ckpt-best.{}".format(ext)
-      tf.logging.info("saving {} to {}".format(src_ckpt, tgt_ckpt))
+      tf.compat.v1.logging.info("saving {} to {}".format(src_ckpt, tgt_ckpt))
       tf.io.gfile.rename(
           os.path.join(FLAGS.output_dir, src_ckpt),
           os.path.join(FLAGS.output_dir, tgt_ckpt),
@@ -494,11 +496,11 @@ def main(_):
         FLAGS.max_seq_length, tokenizer,
         predict_file, task_name)
 
-    tf.logging.info("***** Running prediction*****")
-    tf.logging.info("  Num examples = %d (%d actual, %d padding)",
+    tf.compat.v1.logging.info("***** Running prediction*****")
+    tf.compat.v1.logging.info("  Num examples = %d (%d actual, %d padding)",
                     len(predict_examples), num_actual_predict_examples,
                     len(predict_examples) - num_actual_predict_examples)
-    tf.logging.info("  Batch size = %d", FLAGS.predict_batch_size)
+    tf.compat.v1.logging.info("  Batch size = %d", FLAGS.predict_batch_size)
 
     predict_drop_remainder = True if FLAGS.use_tpu else False
     predict_input_fn = classifier_utils.file_based_input_fn_builder(
@@ -517,11 +519,11 @@ def main(_):
 
     output_predict_file = os.path.join(FLAGS.output_dir, "test_results.tsv")
     output_submit_file = os.path.join(FLAGS.output_dir, "submit_results.tsv")
-    with tf.gfile.GFile(output_predict_file, "w") as pred_writer,\
-        tf.gfile.GFile(output_submit_file, "w") as sub_writer:
+    with tf.io.gfile.GFile(output_predict_file, "w") as pred_writer,\
+        tf.io.gfile.GFile(output_submit_file, "w") as sub_writer:
       sub_writer.write("index" + "\t" + "prediction\n")
       num_written_lines = 0
-      tf.logging.info("***** Predict results *****")
+      tf.compat.v1.logging.info("***** Predict results *****")
       for (i, (example, prediction)) in\
           enumerate(zip(predict_examples, result)):
         probabilities = prediction["probabilities"]
@@ -541,14 +543,14 @@ def main(_):
     assert num_written_lines == num_actual_predict_examples
 
   if FLAGS.export_dir:
-    tf.gfile.MakeDirs(FLAGS.export_dir)
+    tf.io.gfile.makedirs(FLAGS.export_dir)
     checkpoint_path = os.path.join(FLAGS.output_dir, "model.ckpt-best")
-    tf.logging.info("Starting to export model.")
+    tf.compat.v1.logging.info("Starting to export model.")
     subfolder = estimator.export_saved_model(
         export_dir_base=FLAGS.export_dir,
         serving_input_receiver_fn=_serving_input_receiver_fn,
         checkpoint_path=checkpoint_path)
-    tf.logging.info("Model exported to %s.", subfolder)
+    tf.compat.v1.logging.info("Model exported to %s.", subfolder)
 
 
 if __name__ == "__main__":
@@ -556,4 +558,4 @@ if __name__ == "__main__":
   flags.mark_flag_as_required("task_name")
   flags.mark_flag_as_required("spm_model_file")
   flags.mark_flag_as_required("output_dir")
-  tf.app.run()
+  tf.compat.v1.app.run()
